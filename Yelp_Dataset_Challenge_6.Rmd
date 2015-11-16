@@ -1,0 +1,246 @@
+---
+title: "Predicting review rating from text alone"
+author: "Ijaz Ahmad"
+date: "November 19, 2015"
+output: pdf_document
+toc: yes
+---
+# Introduction
+Yelp connects people to great businesses and helps them find the most relevant businesses for their everyday needs. Sometimes people write a review that does not exactly represent the rating awarded by them to that business. Our goal is to predict review rating of a business from its review text alone.
+
+To make our prediction independent of review ratings awarded by the users to the business under examination, we shall build our prediction model on the review data of all other businesses of the same category and take a sample of reviews equal to the number of reviews in the business being examined.
+
+# Methods and Data
+
+## Working directory and session information:
+- Set working directory and load the packages 'downloader', 'jsonlite', 'dplyr', 'tidyr', 'ggplot2' and 'RTextTools'.
+```{r Load.Packages, message=FALSE, echo=FALSE}
+## Set working directory
+setwd("~/Documents/Coursera/Data Science/Capstone Project/")
+
+## Load required packages/libraries
+library(downloader); library(jsonlite); library(dplyr); library(RTextTools); library(tidyr);
+library(ggplot2)
+sessionInfo()
+```
+## Downloading data from web and loading nto R:
+- Download the data: [Yelp Dataset](https://d396qusza40orc.cloudfront.net/dsscapstone/dataset/yelp_dataset_challenge_academic_dataset.zip) (575 MB), quite a large data set requiring a disk space of **602.5 MB** for zip file and a disk space **1.672 GB** when expanded.
+```{r Load.Data, message=FALSE, eval=FALSE}
+## Download data
+url = "https://d396qusza40orc.cloudfront.net/dsscapstone/dataset/yelp_dataset_challenge_academic_dataset.zip"
+if(is.null("./yelp_dataset_challenge_academic_dataset.zip"))
+        download(url, destfile = "./yelp_dataset_challenge_academic_dataset.zip")
+
+## Load Data into R
+if(is.null("./yelp_dataset_challenge_academic_dataset/"))
+        unzip("./yelp_dataset_challenge_academic_dataset.zip")
+```
+- Load JSON data into R as data frame. For Yelp data set, the function **fromJSON()** will not work. Instead we have used **stream_in()** and **flatten()**. Save the R objects as **.rds** files in the working directory for ease of use and to save time.
+```{r Read.JSON.data, eval=FALSE, cache=TRUE}
+business <- stream_in(
+        file("./yelp_dataset_challenge_academic_dataset/yelp_academic_dataset_business.json"))
+business <- flatten(business)
+checkin <- stream_in(
+        file("./yelp_dataset_challenge_academic_dataset/yelp_academic_dataset_checkin.json"))
+checkin <- flatten(checkin)}
+review <- stream_in(
+        file("./yelp_dataset_challenge_academic_dataset/yelp_academic_dataset_review.json"))
+review <- flatten(review)
+tip <- stream_in(
+        file("./yelp_dataset_challenge_academic_dataset/yelp_academic_dataset_tip.json"))
+tip <- flatten(tip)
+user <- stream_in(
+        file("./yelp_dataset_challenge_academic_dataset/yelp_academic_dataset_user.json"))
+user <- flatten(user)
+
+# Save the metadata to save the conversion and loading of JSON data
+saveRDS(business, "./complete_businesses.rds")
+saveRDS(checkin, "./checkin.rds")
+saveRDS(review, "./complete_reviews.rds")
+saveRDS(tip, "./tip.rds")
+saveRDS(user, "./user.rds")
+```
+
+## Exploratory data analysis:
+- In order to predict review rating of a business, we just need to explore business and review data sets.
+- The first step, of course, is to know the dimensions of data set.
+```{r Explore_Data, cache=TRUE}
+business <- readRDS("./complete_businesses.rds")
+review <- readRDS("./complete_reviews.rds")
+cat(format(dim(business), big.mark = ",")); cat(format(dim(review), big.mark = ","))
+```
+- Now we know that the business data contains **`r dim(business)[1]`** observations and **`r dim(business)[2]`** variables while the review data consists of **`r dim(review)[1]`** observations and **`r dim(review)[2]`** variables.  
+- It will be a harder decision to print the names of **`r dim(business)[2]`** variables of business data while it is okay to print just first six variable names of business and review data sets.
+```{r Variable_Names}
+head(names(business))
+head(names(review))
+```
+- For the purpose of data analysis and prediction model development, we need a reasonable number of reviews to examine. The predicted review rating will be more reliable if the examined reviews are on higher side.
+
+- Consider/generate now only the files containing business data (variables to be selected: 'business_id', 'categories', 'name', 'review_count', 'stars' where 'review_count' >= 100 and there exist at least another five businesses with similar categories) and review data (variables to be selected: 'business_id', 'stars' and 'text' where the 'business_id' matches with the same in the filtered business file). Save the generated R objects as **'business.rds'** and **'review.rds'** files in the working directory.
+```{r Business.Review.Data, cache=TRUE}
+## Generate a business data where review count is >= 100
+## and with at least six similar categories
+bus_rows <- business %>% filter(review_count >= 100) %>%
+        select(business_id, categories, name, review_count, stars)
+n <- dim(bus_rows)[1]
+bus_data <- data.frame()
+for(i in 1:n) {
+        id <- bus_rows[i, 1]           ## Identify business id in ith row
+        bus_cat <- bus_rows[i, 2]      ## Identify business categories in ith row
+        sim_cat <- filter(bus_rows, categories %in% bus_cat)
+        k <- dim(sim_cat)[1]
+        if(k > 5) bus_data <- rbind(bus_data, bus_rows[i,])}
+
+## Generate review data for business with at least six similar categories
+bus_ids <- bus_data$business_id
+rev_data <- review %>% filter(business_id %in% bus_ids) %>%
+        select(business_id, stars, text)
+
+## Save the new business and review data in working directory
+saveRDS(bus_data, "./business_100.rds")
+saveRDS(rev_data, "./review_100.rds")
+```
+- Load the filtered business and review data from the working directory if not available in the environment.
+```{r Filtered.Data, cache=TRUE}
+# Load data from the working directory
+if(!exists("business_100")) business_100 <- readRDS("./business_100.rds")
+if(!exists("review_100")) review_100 <- readRDS("./review_100.rds")
+```
+- Have a look at the review counts given in business data and match it with the number of actual reviews available with us in review data.
+```{r Match_Review_Count}
+cat(format(sum(business_100$review_count), big.mark = ","))
+cat(format(dim(review_100)[1], big.mark = ","))
+```
+- The number of review counts in business data set are **`r sum(business_100$review_count)`** while the actual number of reviews related to the businesses are **`r dim(review_100)[1]`**. This means we need to replace review count of each business as per factual position, filter it down to review count >=100 again and reconstruct our review data to match our new business data.
+```{r Change_Review_Count, cache=TRUE}
+bus_ids <- business_100$business_id
+n <- length(bus_ids)
+for(i in 1:n) {
+id <- business_100[i, 1]           ## Identify business id in ith row
+rev_id <- filter(review_100, business_id == id)
+business_100$review_count[i] <- dim(rev_id)[1]}
+bus_data <- business_100 %>% filter(review_count >= 100)
+bus_ids <- bus_data$business_id
+rev_data <- review_100 %>% filter(business_id %in% bus_ids)
+Rev.Count <- data.frame(New_Data = sum(bus_data$review_count),
+                        Original_Data = sum(business_100$review_count),
+                        Review_Data = dim(rev_data)[1])
+row.names(Rev.Count) <- "Review.Count"
+Rev.Count
+```
+- The first step for building our prediction model is the selection of business to be rated on the basis of its reviews. After identifying the business, we need to extract its reviews.
+```{r Identify.Business.Review}
+bus_id <- sample(bus_data$business_id, size = 1)
+bus_row <- bus_data %>% filter(business_id == bus_id)
+bus_cat <- bus_row$categories
+bus_rev <- rev_data %>% filter(business_id == bus_id) %>% select(stars, text)
+```
+- Build a prediction model to predict review rating for the business using 'RTextTools' package and need to select an algorithm for training/testing the review data.
+
+- To avoid over fitting, the review data (to be examined for model building) must be independent of the reviews for which the rating is to be predicted. To do so, (i) select businesses with similar 'categories' to the business for which review rating is being predicted; (ii) filter review data relating to businesses in 'id_list'
+```{r Build.Model, cache=TRUE}
+## Filter businesses having similar catagories
+sim_bus <- filter(bus_data, categories %in% bus_cat)
+
+## Create a sample ID list of 5 businesses of similar catagories excluding the selected business
+sim_bus <- sim_bus %>% filter(business_id != bus_id)
+id_list <- sample(sim_bus$business_id, 5)
+
+## Filter review data relating to businesses in 'id_list'
+model_rev <- rev_data %>% filter(business_id %in% id_list) %>% select(stars, text)
+
+## Define dimentions of container
+bus_n <- dim(bus_rev)[1]
+model_n <- dim(model_rev)[1]
+if(bus_n > model_n) n <- model_n
+if(bus_n < model_n) n <- bus_n
+m <- round(.9 * n, 0)
+
+## Sample observations from 'model_rev' equal to observations in 'bus_rev'
+if(bus_n < model_n) model_rev <- sample_n(model_rev, n)
+if(bus_n > model_n) bus_rev <- sample_n(bus_rev, n)
+
+## Create Document Term Matrix of model data
+Doc_Matrix <- create_matrix(model_rev$text, removeNumbers = T,
+removeSparseTerms = 0.998, stemWords = T)
+
+## Create a container of model data
+container <- create_container(Doc_Matrix, model_rev$stars,
+                              trainSize = 1:m, testSize = (m+1):n, virgin = F)
+# Training Models
+models <- train_models(container, c("SVM", "MAXENT", "BOOSTING", "BAGGING", "TREE"))
+MAXENT <- train_model(container, "MAXENT")
+
+## Classify data using training models
+results <- classify_models(container, models)
+CLASSIFY_MAXENT <- classify_model(container, MAXENT)
+
+## Create score summary
+score_summary <- create_scoreSummary(container, results)
+score_summary
+comp_result <- data.frame(SVM = round(mean(extract_numeric(score_summary$SVM_LABEL)), 1),
+                          MAXENT = round(mean(extract_numeric(score_summary$MAXENTROPY_LABEL)), 1),
+                          BOOSTING = round(mean(extract_numeric(score_summary$LOGITBOOST_LABEL)), 1),
+                          BAGGING = round(mean(extract_numeric(score_summary$BAGGING_LABEL)), 1),
+                          TREE = round(mean(extract_numeric(score_summary$TREE_LABEL)), 1),
+                          BEST = round(mean(extract_numeric(score_summary$BEST_LABEL)), 1),
+                          ACTUAL = round(mean(extract_numeric(model_rev$stars)), 1))
+row.names(comp_result) <- "Rating"
+comp_result
+
+## Cross validation
+ensembled_accuracy <- cross_validate(container, 4, c("SVM", "MAXENT", "BOOSTING", "BAGGING", "TREE"))
+maxent_accuracy <- cross_validate(container, 4, "MAXENT")
+maxent_accuracy
+```
+
+# Results
+- The Score Summary results may favor selection of ensembled model or some other algorithm but Out of Sample Accuracy of "MAXENT" algorithm **(`r round(maxent_accuracy$meanAccuracy * 100, 1)`%)** is much much better than the ensembled algorithm Out of Sample Accuracy **(`r round(ensembled_accuracy$meanAccuracy * 100, 1)`%)**. The best prediction model in our case is, therefore, **"MAXENT <- train_model(container, "MAXENT")"**.
+- The actual average rating should be recalculated against the given review ratings as it may differ from the given business rating.
+- To make sure the algorithm is not taking into account the given review ratings of the business, we should move 'NAs' to all observations of variable 'stars'.
+- In order to rate maximum reviews independently, we need to shorten the train data to its minimum possible extent. In our case, the train data consist of only one observation while all the remaining data constitutes the test data.
+- Classify the business reviews as per selected model and calculate the average predicted review rating. We may also draw a bar plot showing the actual and predicted rating of that business.
+```{r Calculate.Results, cache=TRUE}
+## Calculate actual review rating
+Actual_Rating <- round(mean(bus_rev$stars), 1)
+
+## Create Document Term Matrix of selected business
+bus_rev$stars <- NA
+Doc_Matrix <- create_matrix(bus_rev$text, removeNumbers = T,
+                            removeSparseTerms = .998, stemWords = T)
+
+## Create a container of selected business
+container <- create_container(Doc_Matrix, bus_rev$stars,
+                              trainSize = 1, testSize = 2:n, virgin = F)
+
+## Classify the selected business
+CLASSIFY_MAXENT <- classify_model(container, MAXENT)
+
+## Calculate average stars of business
+predicted_rating <- round(mean(extract_numeric(CLASSIFY_MAXENT$MAXENTROPY_LABEL)), 1)
+```
+
+```{r Print.Results, echo=FALSE}
+cat(paste("Business ID:", bus_id))
+cat(paste("Business Name:", bus_row$name))
+cat(paste("Predicted Rating:", predicted_rating, "stars"))
+cat(paste("Actual Rating:", Actual_Rating, "stars"))
+cat(paste("Catagories:", bus_row$categories))
+```
+
+```{r echo=FALSE, fig.height=4, fig.width=6}
+review_rating <- data.frame(Type = c("Predicted", "Actual"),
+                     Rating = c(predicted_rating, Actual_Rating))
+row.names(review_rating) <- NULL
+ggplot(review_rating, aes(x = Type, y = Rating, fill = Type)) +
+        geom_bar(stat = "identity", col = "black", position = "dodge") +
+        geom_text(aes(label = Rating), vjust = 3, col = "white", size = 10) +
+        labs(x = "Type of rating", y = "Review rating (stars)")
+```
+
+# Discussion
+- Finalizing the report in just five pages was next-to-impossible task for me; as one has to write an academic report along with all code. I have failed to curtail the report to the stated limit for which I apologize.
+- Instead of applying unsupervised algorithm/classification model, I have preferred supervised algorithm/classification model i.e. using **'MAXENT'** algorithm in 'classify_model()' function of 'RTextTools' package.
+- Keeping in view the selection of text only for prediction of business rating, the results are quite satisfactory. We should keep in mind that (i) the words sometimes do not actually represent all factors against which the user had decided the rating of the business and (ii) selecting independent reviews (other than the business under examination) makes it more difficult to predict the business rating just on the basis of text.
+- My Shiny App predicting Business Rating can be found [here](https://ijaz-ahmad.shinyapps.io/Business_Rating). The respose of application is much much slow on the shiny server while it is comparatively much faster when I run it on my machine. The code of application and .rmd file can be found at GitHub [here](https://github.com/Ijaz-Ahmad/Yelp_Challenge_6).
